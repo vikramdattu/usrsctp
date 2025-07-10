@@ -126,6 +126,7 @@ list(APPEND usrsctp_netinet_headers
 	netinet/sctp_asconf.h
 	netinet/sctp_auth.h
 	netinet/sctp_bsd_addr.h
+	netinet/sctp_lwip_thread_safe.c
 	netinet/sctp_callout.h
 	netinet/sctp_constants.h
 	netinet/sctp_crc32.h

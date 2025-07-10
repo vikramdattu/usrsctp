@@ -95,15 +95,97 @@ sctp_userspace_set_threadname(const char *name)
 }
 
 #if !defined(_WIN32) && !defined(__native_client__)
+#if defined(ESP_PLATFORM) && defined(SCTP_USE_LWIP)
+#include "lwip/tcpip.h"
+#include "lwip/err.h"
+#include "lwip/netif.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
+
+// Structure to pass data between threads
+typedef struct {
+	uint32_t if_index;
+	SemaphoreHandle_t semaphore;
+	int mtu;
+} mtu_thread_data_t;
+
+// Function to run in TCPIP thread
+void get_mtu_tcpip_thread(void *arg)
+{
+	mtu_thread_data_t *thread_data = (mtu_thread_data_t *)arg;
+	struct netif* net_if = netif_get_by_index(thread_data->if_index);
+
+	if(net_if != NULL) {
+		thread_data->mtu = net_if->mtu;
+	} else {
+		thread_data->mtu = 0;
+	}
+
+	xSemaphoreGive(thread_data->semaphore);
+}
+
+int sctp_userspace_get_mtu_from_ifn_safe(uint32_t if_index)
+{
+
+	// Special case for 0xffffffff (wildcard interface)
+	if (if_index == 0xffffffff) {
+		return 1280;
+	}
+
+	// Allocate thread data on the heap to ensure it remains valid
+	mtu_thread_data_t *thread_data = malloc(sizeof(mtu_thread_data_t));
+	if (thread_data == NULL) {
+		return 0;
+	}
+
+	thread_data->if_index = if_index;
+	thread_data->mtu = 0;
+
+	// Create semaphore
+	thread_data->semaphore = xSemaphoreCreateBinary();
+	if (thread_data->semaphore == NULL) {
+		free(thread_data);
+		return 0;
+	}
+
+	// Execute in TCPIP thread
+	err_t err = tcpip_callback(get_mtu_tcpip_thread, thread_data);
+	if (err != ERR_OK) {
+		vSemaphoreDelete(thread_data->semaphore);
+		free(thread_data);
+		return 0;
+	}
+
+	// Wait for completion (with timeout)
+	if (xSemaphoreTake(thread_data->semaphore, pdMS_TO_TICKS(1000)) != pdTRUE) {
+		// Even if timeout occurs, we can't free the data yet as the TCPIP thread might still be using it
+		// Just return and accept the memory leak in this rare timeout case
+		return 0;
+	}
+
+	int result = thread_data->mtu;
+	vSemaphoreDelete(thread_data->semaphore);
+	free(thread_data);
+	return result;
+}
+#endif
+
 int
 sctp_userspace_get_mtu_from_ifn(uint32_t if_index)
 {
 #if defined(SCTP_USE_LWIP)
+#if defined(ESP_PLATFORM)
+	// When running on ESP platform, we need to ensure the network interface operations
+	// happen in the TCPIP thread to avoid thread safety issues with LWIP
+	return sctp_userspace_get_mtu_from_ifn_safe(if_index);
+#else
 	struct netif* net_if = netif_get_by_index(if_index);
 	if(net_if != NULL){
 		return net_if->mtu;
 	}
 	return 0;
+#endif
 #else
 #if defined(INET) || defined(INET6)
 	struct ifreq ifr;
