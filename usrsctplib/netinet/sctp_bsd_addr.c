@@ -51,6 +51,9 @@
 
 #if defined(SCTP_USE_LWIP)
 #include <lwip/netif.h>
+#if defined(ESP_PLATFORM)
+#include "sctp_lwip_thread_safe.h"
+#endif
 #endif
 
 /* Declare all of our malloc named types */
@@ -415,6 +418,10 @@ static void
 sctp_init_ifns_for_vrf(int vrfid)
 {
 #if defined(SCTP_USE_LWIP)
+#if defined(ESP_PLATFORM)
+       // Use thread-safe wrapper for ESP platform
+       sctp_lwip_init_ifns_for_vrf_safe((uint32_t)vrfid);
+#else
        #define LWIP_IF_NUM_MAX 256
 
        struct sctp_ifa *sctp_ifa;
@@ -489,6 +496,7 @@ sctp_init_ifns_for_vrf(int vrfid)
                }
        }
        free(in_addr);
+#endif
 #else
 #if defined(INET) || defined(INET6)
 	int rc;

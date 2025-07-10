@@ -3110,9 +3110,178 @@ free_mbuf:
 }
 #endif
 
+#if defined(ESP_PLATFORM) && defined(SCTP_USE_LWIP)
+#include "lwip/tcpip.h"
+#include "lwip/err.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
+
+// Structure to pass data between threads for register_address
+typedef struct {
+	struct sockaddr_conn *sconn;
+	SemaphoreHandle_t semaphore;
+} register_thread_data_t;
+
+// Function to run in TCPIP thread for register_address
+void register_address_tcpip_thread(void *arg)
+{
+	register_thread_data_t *thread_data = (register_thread_data_t *)arg;
+
+	// This function is now running in the TCPIP thread context, so it's safe to call
+	sctp_add_addr_to_vrf(SCTP_DEFAULT_VRFID,
+							NULL,
+							0xffffffff,
+							0,
+							"conn",
+							NULL,
+							(struct sockaddr *)thread_data->sconn,
+							0,
+							0);
+
+	xSemaphoreGive(thread_data->semaphore);
+}
+
+// Structure to pass data between threads for deregister_address
+typedef struct {
+	struct sockaddr_conn *sconn;
+	SemaphoreHandle_t semaphore;
+} deregister_thread_data_t;
+
+// Function to run in TCPIP thread for deregister_address
+void deregister_address_tcpip_thread(void *arg)
+{
+	deregister_thread_data_t *thread_data = (deregister_thread_data_t *)arg;
+
+	// This function is now running in the TCPIP thread context, so it's safe to call
+	sctp_del_addr_from_vrf(SCTP_DEFAULT_VRFID,
+						 (struct sockaddr *)thread_data->sconn,
+						 NULL, 0xffffffff);
+
+	xSemaphoreGive(thread_data->semaphore);
+}
+
+static void usrsctp_deregister_address_safe(void *addr)
+{
+	struct sockaddr_conn sconn;
+
+	memset(&sconn, 0, sizeof(struct sockaddr_conn));
+	sconn.sconn_family = AF_CONN;
+#ifdef HAVE_SCONN_LEN
+	sconn.sconn_len = sizeof(struct sockaddr_conn);
+#endif
+	sconn.sconn_port = 0;
+	sconn.sconn_addr = addr;
+
+	// Allocate thread data on the heap to ensure it remains valid
+	deregister_thread_data_t *thread_data = malloc(sizeof(deregister_thread_data_t));
+	if (thread_data == NULL) {
+		return;
+	}
+
+	// Copy sockaddr to heap to ensure it remains valid
+	struct sockaddr_conn *heap_sconn = malloc(sizeof(struct sockaddr_conn));
+	if (heap_sconn == NULL) {
+		free(thread_data);
+		return;
+	}
+	memcpy(heap_sconn, &sconn, sizeof(struct sockaddr_conn));
+
+	thread_data->sconn = heap_sconn;
+
+	// Create semaphore
+	thread_data->semaphore = xSemaphoreCreateBinary();
+	if (thread_data->semaphore == NULL) {
+		free(heap_sconn);
+		free(thread_data);
+		return;
+	}
+
+	// Execute in TCPIP thread
+	err_t err = tcpip_callback(deregister_address_tcpip_thread, thread_data);
+	if (err != ERR_OK) {
+		vSemaphoreDelete(thread_data->semaphore);
+		free(heap_sconn);
+		free(thread_data);
+		return;
+	}
+
+	// Wait for completion (with timeout)
+	if (xSemaphoreTake(thread_data->semaphore, pdMS_TO_TICKS(5000)) != pdTRUE) {
+		// Even if timeout occurs, we can't free the data yet as the TCPIP thread might still be using it
+		// Just return and accept the memory leak in this rare timeout case
+		return;
+	}
+
+	vSemaphoreDelete(thread_data->semaphore);
+	free(heap_sconn);
+	free(thread_data);
+}
+
+static void usrsctp_register_address_safe(void *addr)
+{
+	struct sockaddr_conn sconn;
+
+	memset(&sconn, 0, sizeof(struct sockaddr_conn));
+	sconn.sconn_family = AF_CONN;
+#ifdef HAVE_SCONN_LEN
+	sconn.sconn_len = sizeof(struct sockaddr_conn);
+#endif
+	sconn.sconn_port = 0;
+	sconn.sconn_addr = addr;
+
+	// Allocate thread data on the heap to ensure it remains valid
+	register_thread_data_t *thread_data = malloc(sizeof(register_thread_data_t));
+	if (thread_data == NULL) {
+		return;
+	}
+
+	// Copy sockaddr to heap to ensure it remains valid
+	struct sockaddr_conn *heap_sconn = malloc(sizeof(struct sockaddr_conn));
+	if (heap_sconn == NULL) {
+		free(thread_data);
+		return;
+	}
+	memcpy(heap_sconn, &sconn, sizeof(struct sockaddr_conn));
+
+	thread_data->sconn = heap_sconn;
+
+	// Create semaphore
+	thread_data->semaphore = xSemaphoreCreateBinary();
+	if (thread_data->semaphore == NULL) {
+		free(heap_sconn);
+		free(thread_data);
+		return;
+	}
+
+	// Execute in TCPIP thread
+	err_t err = tcpip_callback(register_address_tcpip_thread, thread_data);
+	if (err != ERR_OK) {
+		vSemaphoreDelete(thread_data->semaphore);
+		free(heap_sconn);
+		free(thread_data);
+		return;
+	}
+
+	// Wait for completion (with timeout)
+	if (xSemaphoreTake(thread_data->semaphore, pdMS_TO_TICKS(5000)) != pdTRUE) {
+		// Even if timeout occurs, we can't free the data yet as the TCPIP thread might still be using it
+		// Just return and accept the memory leak in this rare timeout case
+		return;
+	}
+
+	vSemaphoreDelete(thread_data->semaphore);
+	free(heap_sconn);
+	free(thread_data);
+}
+#endif
+
 void
 usrsctp_register_address(void *addr)
 {
+#if defined(ESP_PLATFORM) && defined(SCTP_USE_LWIP)
+	usrsctp_register_address_safe(addr);
+#else
 	struct sockaddr_conn sconn;
 
 	memset(&sconn, 0, sizeof(struct sockaddr_conn));
@@ -3131,11 +3300,15 @@ usrsctp_register_address(void *addr)
 	                     (struct sockaddr *)&sconn,
 	                     0,
 	                     0);
+#endif
 }
 
 void
 usrsctp_deregister_address(void *addr)
 {
+#if defined(ESP_PLATFORM) && defined(SCTP_USE_LWIP)
+	usrsctp_deregister_address_safe(addr);
+#else
 	struct sockaddr_conn sconn;
 
 	memset(&sconn, 0, sizeof(struct sockaddr_conn));
@@ -3148,6 +3321,7 @@ usrsctp_deregister_address(void *addr)
 	sctp_del_addr_from_vrf(SCTP_DEFAULT_VRFID,
 	                       (struct sockaddr *)&sconn,
 	                       NULL, 0xffffffff);
+#endif
 }
 
 #define PREAMBLE_FORMAT "\n%c %02d:%02d:%02d.%06ld "
