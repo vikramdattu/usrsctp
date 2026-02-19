@@ -44,6 +44,11 @@
 #include <sys/prctl.h>
 #endif
 
+#if defined(ESP_PLATFORM)
+#include "esp_pthread.h"
+#include "esp_heap_caps.h"
+#endif
+
 #if defined(_WIN32)
 /* Adapter to translate Unix thread start routines to Windows thread start
  * routines.
@@ -76,6 +81,12 @@ sctp_userspace_thread_create(userland_thread_t *thread, start_routine_t start_ro
 int
 sctp_userspace_thread_create(userland_thread_t *thread, start_routine_t start_routine)
 {
+#if defined(ESP_PLATFORM)
+	esp_pthread_cfg_t pthread_cfg = esp_pthread_get_default_config();
+	pthread_cfg.stack_alloc_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+	pthread_cfg.thread_name = "sctp_userspace";
+	esp_pthread_set_cfg(&pthread_cfg);
+#endif
 	return pthread_create(thread, NULL, start_routine, NULL);
 }
 #endif
