@@ -303,8 +303,13 @@ typedef char* caddr_t;
 
 #if defined(SCTP_USE_LWIP)
 #define IPVERSION  4
+/* Host <sys/socket.h> on glibc/macOS already supplies CMSG_ALIGN; only
+ * provide the lwIP fallback when it's missing (matters for bare-metal /
+ * RTOS targets where <sys/socket.h> is a thin shim). */
+#ifndef CMSG_ALIGN
 #define CMSG_ALIGN(len) (((len) + sizeof (size_t) - 1) \
                         & (size_t) ~(sizeof (size_t) - 1))
+#endif
 #endif/* */
 
 typedef pthread_mutex_t userland_mutex_t;

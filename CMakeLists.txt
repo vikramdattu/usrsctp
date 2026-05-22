@@ -87,6 +87,41 @@ if(sctp_use_lwip)
        add_definitions(-DSCTP_USE_LWIP)
 endif()
 
+# Host-side lwIP smoke test.  Declared here (rather than at the very end
+# of the file) so the lwIP include paths are visible to `usrsctplib`'s
+# own compile step, not just to the `tests/` subdir.  When OFF (the
+# default) nothing else in this file is affected.
+option(sctp_build_lwip_smoke "Build the host-side lwIP smoke test (requires sctp_use_lwip=ON and LWIP_SRC_DIR / LWIP_PORT_DIR)" OFF)
+
+if (sctp_build_lwip_smoke)
+	if (NOT sctp_use_lwip)
+		message(FATAL_ERROR "sctp_build_lwip_smoke=ON requires sctp_use_lwip=ON")
+	endif ()
+	if (NOT LWIP_SRC_DIR)
+		message(FATAL_ERROR "sctp_build_lwip_smoke=ON requires -DLWIP_SRC_DIR=<path to lwip source tree>")
+	endif ()
+	if (NOT LWIP_PORT_DIR)
+		message(FATAL_ERROR "sctp_build_lwip_smoke=ON requires -DLWIP_PORT_DIR=<path to lwip unix port>")
+	endif ()
+	if (NOT EXISTS "${LWIP_SRC_DIR}/src/include/lwip/opt.h")
+		message(FATAL_ERROR "LWIP_SRC_DIR='${LWIP_SRC_DIR}' does not look like a lwIP source tree (missing src/include/lwip/opt.h)")
+	endif ()
+
+	# Propagate lwIP headers to every target below (usrsctplib + tests).
+	include_directories(
+		${LWIP_SRC_DIR}/src/include
+		${LWIP_PORT_DIR}/port/include
+	)
+	# Pick up lwipopts.h from one of the well-known contrib locations.
+	if (EXISTS "${LWIP_PORT_DIR}/../../examples/example_app/lwipopts.h")
+		include_directories(${LWIP_PORT_DIR}/../../examples/example_app)
+	elseif (EXISTS "${LWIP_PORT_DIR}/lib/lwipopts.h")
+		include_directories(${LWIP_PORT_DIR}/lib)
+	elseif (EXISTS "${LWIP_PORT_DIR}/lwipopts.h")
+		include_directories(${LWIP_PORT_DIR})
+	endif ()
+endif ()
+
 if (sctp_sanitizer_address AND sctp_sanitizer_memory)
 	message(FATAL_ERROR "Can not compile with both sanitizer options")
 endif ()
@@ -291,3 +326,10 @@ if (sctp_build_fuzzer)
 	add_subdirectory(fuzzer)
 endif ()
 
+
+if (sctp_build_lwip_smoke)
+	# Validation of cache vars happens up at the top of this file, near
+	# the `sctp_use_lwip` block, so include paths are visible to all
+	# subdirectories.
+	add_subdirectory(tests)
+endif ()
