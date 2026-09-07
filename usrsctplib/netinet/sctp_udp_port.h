@@ -46,19 +46,28 @@ __FBSDID("$FreeBSD: head/sys/netinet/sctp_timer.h 359195 2020-03-21 16:12:19Z tu
 #if !defined(SCTP_USE_LWIP)
 #include <netinet/udp.h>
 
+/* Use BSD-style `uh_*` member names: present on macOS unconditionally,
+ * and present on Linux glibc when __FAVOR_BSD is defined (which
+ * sctp_output.c does, see its top of file). The previous form
+ * (`->source` / `->dest` / `->len` / `->check`) only worked on Linux
+ * glibc *without* __FAVOR_BSD — i.e. inconsistent with the rest of
+ * the file — and broke macOS host builds outright. */
+/* Parameter name `_h` instead of `udp` — same preprocessor-hygiene
+ * concern as in sctp_ip_port.h: `udp` would collide with the
+ * `struct udphdr` token. */
 #define STRUCT_UDP_HDR struct udphdr
-#define GET_UDP_SRC(udp) ((struct udphdr*)udp)->source
-#define GET_UDP_DEST(udp) ((struct udphdr*)udp)->dest
-#define GET_UDP_LEN(udp) ((struct udphdr*)udp)->len
-#define GET_UDP_CHKSUM(udp) ((struct udphdr*)udp)->check
+#define GET_UDP_SRC(_h)    ((struct udphdr*)(_h))->uh_sport
+#define GET_UDP_DEST(_h)   ((struct udphdr*)(_h))->uh_dport
+#define GET_UDP_LEN(_h)    ((struct udphdr*)(_h))->uh_ulen
+#define GET_UDP_CHKSUM(_h) ((struct udphdr*)(_h))->uh_sum
 
 #else
 #include "lwip/udp.h"
 #define STRUCT_UDP_HDR struct udp_hdr
-#define GET_UDP_SRC(udp) ((struct udp_hdr*)udp)->src
-#define GET_UDP_DEST(udp) ((struct udp_hdr*)udp)->dest
-#define GET_UDP_LEN(udp) ((struct udp_hdr*)udp)->len
-#define GET_UDP_CHKSUM(udp) ((struct udp_hdr*)udp)->chksum
+#define GET_UDP_SRC(_h)    ((struct udp_hdr*)(_h))->src
+#define GET_UDP_DEST(_h)   ((struct udp_hdr*)(_h))->dest
+#define GET_UDP_LEN(_h)    ((struct udp_hdr*)(_h))->len
+#define GET_UDP_CHKSUM(_h) ((struct udp_hdr*)(_h))->chksum
 
 // #TBD
 #define UIO_MAXIOV 1024

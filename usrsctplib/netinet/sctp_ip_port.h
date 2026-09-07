@@ -43,22 +43,26 @@ __FBSDID("$FreeBSD: head/sys/netinet/sctp_timer.h 359195 2020-03-21 16:12:19Z tu
 #if !defined(SCTP_USE_LWIP)
 #include <netinet/ip.h>
 #define STRUCT_IP_HDR struct ip
-//#define GET_IP_VERSION(ip) ((struct ip_hdr*)(ip))->ip_v
-//#define GET_IP_HDR_LEN(ip) ((struct ip_hdr*)(ip))->ip_hl
-#define GET_IP_TOS(ip) ((struct ip*)(ip))->ip_tos
-#define GET_IP_LEN(ip) ((struct ip*)ip)->ip_len
-#define GET_IP_ID(ip) ((struct ip*)ip)->ip_id
-#define GET_IP_OFFSET(ip) ((struct ip*)ip)->ip_off
-#define GET_IP_TTL(ip) ((struct ip*)ip)->ip_ttl
-#define GET_IP_PROTO(ip) ((struct ip*)ip)->ip_p
-#define GET_IP_CHKSUM(ip) ((struct ip*)ip)->ip_sum
-#define GET_IP_SRC(ip) ((struct ip*)ip)->ip_src
-#define GET_IP_DEST(ip) ((struct ip*)ip)->ip_dst
-#define GET_IP_SRC_ADDR(ip) ((struct ip*)ip)->ip_src.s_addr
-#define GET_IP_DEST_ADDR(ip) ((struct ip*)ip)->ip_dst.s_addr
+/* The parameter is named `_h` (not `ip`) on purpose: a parameter
+ * named `ip` would collide with the literal `ip` token inside
+ * `struct ip*`, and the preprocessor — which doesn't know C syntax —
+ * would substitute it, producing nonsense like `struct iphdr*`
+ * when the caller passes a variable named `iphdr`. That hygiene bug
+ * existed in the original "Added LWIP support" commit. */
+#define GET_IP_TOS(_h)       ((struct ip*)(_h))->ip_tos
+#define GET_IP_LEN(_h)       ((struct ip*)(_h))->ip_len
+#define GET_IP_ID(_h)        ((struct ip*)(_h))->ip_id
+#define GET_IP_OFFSET(_h)    ((struct ip*)(_h))->ip_off
+#define GET_IP_TTL(_h)       ((struct ip*)(_h))->ip_ttl
+#define GET_IP_PROTO(_h)     ((struct ip*)(_h))->ip_p
+#define GET_IP_CHKSUM(_h)    ((struct ip*)(_h))->ip_sum
+#define GET_IP_SRC(_h)       ((struct ip*)(_h))->ip_src
+#define GET_IP_DEST(_h)      ((struct ip*)(_h))->ip_dst
+#define GET_IP_SRC_ADDR(_h)  ((struct ip*)(_h))->ip_src.s_addr
+#define GET_IP_DEST_ADDR(_h) ((struct ip*)(_h))->ip_dst.s_addr
 
-#define GET_IP_VERSION_VAL(ip) ((struct ip_hdr*)(ip))->ip_v
-#define GET_IP_HDR_LEN_VAL(ip) ((struct ip_hdr*)(ip))->ip_hl
+#define GET_IP_VERSION_VAL(_h) ((struct ip*)(_h))->ip_v
+#define GET_IP_HDR_LEN_VAL(_h) ((struct ip*)(_h))->ip_hl
 
 #define SET_IP_VHL(hdr, v, hl) do{\
                                     (hdr)->ip_v = v;\
