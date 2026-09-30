@@ -13,13 +13,70 @@
 #include "sctp_pcb.h"
 #include "sctp_var.h"
 #include "sctp_constants.h"
+#include "sctp_lwip_thread_safe.h"
 
 #define LWIP_IF_NUM_MAX 256
+
+typedef struct {
+    void (*fn)(void *arg);
+    void *arg;
+    SemaphoreHandle_t done;
+} tcpip_call_t;
+
+static void tcpip_call_trampoline(void *arg)
+{
+    tcpip_call_t *call = (tcpip_call_t *)arg;
+
+    call->fn(call->arg);
+    xSemaphoreGive(call->done);
+}
+
+bool sctp_lwip_call_in_tcpip(void (*fn)(void *arg), void *arg, uint32_t timeout_ms)
+{
+    if (sys_thread_tcpip(LWIP_CORE_LOCK_QUERY_HOLDER)) {
+        fn(arg);
+        return true;
+    }
+
+#if LWIP_TCPIP_CORE_LOCKING
+    // The TCPIP thread holds this lock while it runs, so holding it gives the same exclusion
+    LOCK_TCPIP_CORE();
+    fn(arg);
+    UNLOCK_TCPIP_CORE();
+    return true;
+#else
+    tcpip_call_t *call = malloc(sizeof(tcpip_call_t));
+    if (call == NULL) {
+        return false;
+    }
+    call->fn = fn;
+    call->arg = arg;
+    call->done = xSemaphoreCreateBinary();
+    if (call->done == NULL) {
+        free(call);
+        return false;
+    }
+
+    if (tcpip_callback(tcpip_call_trampoline, call) != ERR_OK) {
+        vSemaphoreDelete(call->done);
+        free(call);
+        return false;
+    }
+
+    if (xSemaphoreTake(call->done, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        // fn may still run: leave call and arg to it rather than free them under it
+        return false;
+    }
+
+    vSemaphoreDelete(call->done);
+    free(call);
+    return true;
+#endif
+}
 
 // Structure to pass data between threads for init_ifns
 typedef struct {
     uint32_t vrfid;
-    SemaphoreHandle_t semaphore;
 } init_ifns_thread_data_t;
 
 // Function to run in TCPIP thread for init_ifns
@@ -34,7 +91,6 @@ static void init_ifns_tcpip_thread(void *arg)
     /* Allocate for sockaddr_in6 which is larger than sockaddr_in */
     struct sockaddr* in_addr = malloc(sizeof(struct sockaddr_in6));
     if (in_addr == NULL) {
-        xSemaphoreGive(thread_data->semaphore);
         return;
     }
 
@@ -106,44 +162,20 @@ static void init_ifns_tcpip_thread(void *arg)
     }
 
     free(in_addr);
-    xSemaphoreGive(thread_data->semaphore);
 }
 
 // Thread-safe wrapper for sctp_init_ifns_for_vrf
 void sctp_lwip_init_ifns_for_vrf_safe(uint32_t vrfid)
 {
-    // Allocate the thread data on the heap to ensure it remains valid
-    // when the TCPIP thread processes it
+    // Heap, not stack: after a hand-off timeout the TCPIP thread may still use it
     init_ifns_thread_data_t *thread_data = malloc(sizeof(init_ifns_thread_data_t));
     if (thread_data == NULL) {
         return;
     }
 
     thread_data->vrfid = vrfid;
-
-    // Create semaphore
-    thread_data->semaphore = xSemaphoreCreateBinary();
-    if (thread_data->semaphore == NULL) {
+    if (sctp_lwip_call_in_tcpip(init_ifns_tcpip_thread, thread_data, 5000)) {
         free(thread_data);
-        return;
     }
-
-    // Execute in TCPIP thread
-    err_t err = tcpip_callback(init_ifns_tcpip_thread, thread_data);
-    if (err != ERR_OK) {
-        vSemaphoreDelete(thread_data->semaphore);
-        free(thread_data);
-        return;
-    }
-
-    // Wait for completion (with timeout)
-    if (xSemaphoreTake(thread_data->semaphore, pdMS_TO_TICKS(5000)) != pdTRUE) {
-        // Even if timeout occurs, we can't free the data yet as the TCPIP thread might still be using it
-        // Just return and accept the memory leak in this rare timeout case
-        return;
-    }
-
-    vSemaphoreDelete(thread_data->semaphore);
-    free(thread_data);
 }
 #endif

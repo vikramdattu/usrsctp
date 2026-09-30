@@ -113,27 +113,20 @@ sctp_userspace_set_threadname(const char *name)
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "sctp_lwip_thread_safe.h"
 
-// Structure to pass data between threads
 typedef struct {
 	uint32_t if_index;
-	SemaphoreHandle_t semaphore;
 	int mtu;
-} mtu_thread_data_t;
+} mtu_lookup_t;
 
-// Function to run in TCPIP thread
-void get_mtu_tcpip_thread(void *arg)
+// Runs in the TCPIP context
+static void get_mtu_tcpip_thread(void *arg)
 {
-	mtu_thread_data_t *thread_data = (mtu_thread_data_t *)arg;
-	struct netif* net_if = netif_get_by_index(thread_data->if_index);
+	mtu_lookup_t *lookup = (mtu_lookup_t *)arg;
+	struct netif* net_if = netif_get_by_index(lookup->if_index);
 
-	if(net_if != NULL) {
-		thread_data->mtu = net_if->mtu;
-	} else {
-		thread_data->mtu = 0;
-	}
-
-	xSemaphoreGive(thread_data->semaphore);
+	lookup->mtu = net_if ? net_if->mtu : 0;
 }
 
 int sctp_userspace_get_mtu_from_ifn_safe(uint32_t if_index)
@@ -144,40 +137,21 @@ int sctp_userspace_get_mtu_from_ifn_safe(uint32_t if_index)
 		return 1280;
 	}
 
-	// Allocate thread data on the heap to ensure it remains valid
-	mtu_thread_data_t *thread_data = malloc(sizeof(mtu_thread_data_t));
-	if (thread_data == NULL) {
+	// Heap, not stack: after a hand-off timeout the TCPIP thread may still use it
+	mtu_lookup_t *lookup = malloc(sizeof(mtu_lookup_t));
+	if (lookup == NULL) {
+		return 0;
+	}
+	lookup->if_index = if_index;
+	lookup->mtu = 0;
+
+	// Called from init_ifns_tcpip_thread(), already in the TCPIP context, for every interface
+	if (!sctp_lwip_call_in_tcpip(get_mtu_tcpip_thread, lookup, 1000)) {
 		return 0;
 	}
 
-	thread_data->if_index = if_index;
-	thread_data->mtu = 0;
-
-	// Create semaphore
-	thread_data->semaphore = xSemaphoreCreateBinary();
-	if (thread_data->semaphore == NULL) {
-		free(thread_data);
-		return 0;
-	}
-
-	// Execute in TCPIP thread
-	err_t err = tcpip_callback(get_mtu_tcpip_thread, thread_data);
-	if (err != ERR_OK) {
-		vSemaphoreDelete(thread_data->semaphore);
-		free(thread_data);
-		return 0;
-	}
-
-	// Wait for completion (with timeout)
-	if (xSemaphoreTake(thread_data->semaphore, pdMS_TO_TICKS(1000)) != pdTRUE) {
-		// Even if timeout occurs, we can't free the data yet as the TCPIP thread might still be using it
-		// Just return and accept the memory leak in this rare timeout case
-		return 0;
-	}
-
-	int result = thread_data->mtu;
-	vSemaphoreDelete(thread_data->semaphore);
-	free(thread_data);
+	int result = lookup->mtu;
+	free(lookup);
 	return result;
 }
 #endif
